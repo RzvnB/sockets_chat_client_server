@@ -36,7 +36,7 @@ struct connection_handle {
 	int lastPingTime;
 	bool authenticated;
 	uint32_t usernameHash;
-	char userName[10];
+	char username[10];
 };
 
 
@@ -51,12 +51,14 @@ static int emptyIdx = 0;
 uint32_t adler32(const void *buf, size_t buflength);
 
 
-void broadcastMsg(char *msg, int r, int sourceSocket) {
+void broadcastMsg(char *msg, int r, int sourceSocket, int sourceIdx) {
+	char formatMessage[MAX_MSG_SIZE];
+	sprintf(formatMessage,"%s: %s", clientConnections[sourceIdx].username, msg);
 	for(int i = 0; i < emptyIdx; i++) {
 		if(clientConnections[i].socket != sourceSocket) {
 			if(clientConnections[i].authenticated) {
 			// printf("Sending -> %s <- to descriptor %d\n", msg, clientSockets[i]);
-				if(write(clientConnections[i].socket, msg, r) != r) {
+				if(write(clientConnections[i].socket, formatMessage, r) != r) {
 					printf("Error writing to socket\n");
 					exit(1);
 				}
@@ -80,6 +82,20 @@ int find_client_with_socket(int socket) {
 		}
 	}
 	return 0;
+}
+
+void handle_whisper(char *msg, int sourceIdx) {
+	char formatMessage[MAX_MSG_SIZE];
+	char *command = strtok(msg, " ");
+	char *destination = strtok(NULL, " ");
+	char *message = strtok(NULL, "");
+	sprintf(formatMessage, "%s=%s: %s", command, clientConnections[sourceIdx].username, message);
+	for(int i = 0; i < emptyIdx; i++) {
+		if(strcmp(clientConnections[i].username, destination) == 0) {
+			write(clientConnections[i].socket, formatMessage, MAX_MSG_SIZE);
+		}
+	}
+
 }
 
 void handle_message(void *argt) {
@@ -110,7 +126,7 @@ void handle_message(void *argt) {
 		}
 
 	} else if(startsWith("/auth", msg)) {
-		printf("I am hereererere\n");
+		// printf("I am hereererere\n");
 		msg = msg + strlen("/auth");
 		int clIdx = find_client_with_socket(args->source);
 		char *userName = strtok(msg, " ");
@@ -122,6 +138,7 @@ void handle_message(void *argt) {
 				clientConnections[clIdx].authenticated = true;
 				takenUsers[hash] = 1;
 				clientConnections[clIdx].usernameHash = hash;
+				strcpy(clientConnections[clIdx].username, userName);
 				write(clientConnections[clIdx].socket, "/auth_succ", MAX_MSG_SIZE);
 			} else {
 				write(clientConnections[clIdx].socket, "/auth_fail", MAX_MSG_SIZE);
@@ -132,11 +149,19 @@ void handle_message(void *argt) {
 			// printf("Auth unsuccessful\n");
 		}
 
+	} else if(startsWith("/w", msg)) {
+		int clIdx = find_client_with_socket(args->source);
+		if(clientConnections[clIdx].authenticated) {
+			handle_whisper(msg, clIdx);
+		} 
+		else {
+			write(clientConnections[clIdx].socket, "/no_access", MAX_MSG_SIZE);
+		}
 	} else {
 		for(int i = 0; i < emptyIdx; i++) {
 			if(clientConnections[i].socket == args->source) {
 				if(clientConnections[i].authenticated) {
-					broadcastMsg(msg, args->size, args->source);
+					broadcastMsg(msg, args->size, args->source, i);
 				} else {
 					write(clientConnections[i].socket, "/no_access", MAX_MSG_SIZE);
 				}
@@ -159,10 +184,6 @@ uint32_t adler32(const void *buf, size_t buflength) {
      return (s2 << 16) | s1;
 }
 
-
-void handle_auth() {
-
-}
 
 void check_idle(void *argt) {
 	int timeNow;
@@ -188,14 +209,6 @@ void check_idle(void *argt) {
 		sleep(5);
 	}
 }
-
-// void print_database() {
-// 	for(int i = 0; i < 1000; i++) {
-// 		if(char[i]) {
-// 			printf("Password: %s\n", char[i]);
-// 		}
-// 	}
-// }
 
 
 int main() {
@@ -330,18 +343,6 @@ int main() {
 					args->size = r;
 					args->source = events[n].data.fd;
 					thpool_add_work(thpool, (void *)handle_message, args);
-					// sleep(10);
-					// for(i = 0; i < nfds; i++) {
-					// 	printf("i = %d\n", i);
-					// 	// if(events[n].data.fd != events[i].data.fd && events[i].data.fd != listenSock) {
-					// 	if(events[i].data.fd != listenSock) {
-					// 		printf("Sending -> %s <- to descriptor %d\n", buffer, events[i].data.fd);
-					// 		if(write(events[i].data.fd, buffer, r) != r) {
-					// 			printf("Error writing to clientSocket socket\n");
-					// 			exit(1);
-					// 		}
-					// 	}
-					// }
 				} else if(r == 0) {
 					epoll_ctl(epollfd, EPOLL_CTL_DEL, events[n].data.fd, NULL);
 					close(events[n].data.fd);
@@ -360,7 +361,6 @@ int main() {
 				} else {
 					break;
 				}
-				// printf("outside while-read loop\n");
 			}
 		}
 	}

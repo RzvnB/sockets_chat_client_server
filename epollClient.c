@@ -30,7 +30,7 @@ int authenticated = 0;
 char username_g[10];
 char password_g[10];
 
-char safetyBuffer[MAX_MSG_SIZE];
+
 
 bool startsWith(const char *pre, const char *str)
 {
@@ -80,10 +80,11 @@ bool valid_username(char *username) {
 }
 
 bool handle_authentication(char *msg) {
+	char safetyBuffer[MAX_MSG_SIZE];
 	strcpy(safetyBuffer, msg);
 	char *userPass = safetyBuffer + strlen("/auth");
 
-	printf("Message before %s\n", msg);
+	// printf("Message before %s\n", msg);
 	char *username = strtok(userPass, " ");
 	char *password = strtok(NULL, " ");
 	char *other = strtok(NULL, " ");
@@ -93,9 +94,21 @@ bool handle_authentication(char *msg) {
 	}
 	// strncpy(username_g, username, 10);
 	// strncpy(password_g, password, 10);
-	printf("Username: %s, Password: %s\n Message after: %s\n", username, password, msg);
-	return true;
+	// printf("Username: %s, Password: %s\n Message after: %s\n", username, password, msg);
+	return valid_username(username) && valid_username(password);
 }
+
+bool handle_whisper(char *msg) {
+	char safetyBuffer[MAX_MSG_SIZE];
+	strcpy(safetyBuffer, msg);
+	char *command = strtok(safetyBuffer, " ");
+	char *destination = strtok(NULL, " ");
+	// char *message = strtok(NULL, "");
+
+	return valid_username(destination);
+
+}
+
 
 void handle_output(void *argt) {
 
@@ -122,7 +135,13 @@ void handle_output(void *argt) {
 			}
 		}
 
-		printf("Sending %s\n", sendBuffer);
+		if(startsWith("/w", sendBuffer)) {
+			if(!handle_whisper(sendBuffer)) {
+				continue;
+			}
+		}
+
+		// printf("Sending %s\n", sendBuffer);
 		if(write(serverSocket, sendBuffer, MAX_MSG_SIZE) == -1) {
 			printf("Server connection dropped\n");
 			close(serverSocket);
@@ -155,7 +174,7 @@ void handle_message(char *msg, int socket) {
 	} else if(strcmp(msg, "/auth_fail") == 0) {
 		printf("Auth failed\n");
 	} else {
-		printf("Received: %s\n", msg);
+		printf(">%s\n", msg);
 	}
 }
 
@@ -225,37 +244,7 @@ int main() {
 	// struct sockaddr_in serverSockAddr;
 
 	char buffer[MAX_MSG_SIZE];
-
-	// if((serverSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) {
-	// 	printf("socket failed\n");
-	// 	exit(1);
-	// }
-
-	// bzero(&serverSockAddr, sizeof(serverSockAddr));
-
-	// serverSockAddr.sin_family = AF_INET;
-	// serverSockAddr.sin_port = htons(3001);
-
-	// if(connect(serverSocket, (struct sockaddr *) &serverSockAddr, sizeof(serverSockAddr)) < 0) {
-	// 	printf("connect() failed\n");
-	// 	exit(1);
-	// }
-	// int n;
-	// pid_t curPid = getpid();
-	// for(n = 0; n < 100; n++) {
-	// 	sprintf(sendBuffer, "Process %d writing hello %d\n", curPid, n);
-	// 	if(write(serverSocket, sendBuffer, MAX_MSG_SIZE) == -1) {
-	// 			printf("Error writing to server socket\n");
-	// 			exit(1);
-	// 	}
-	// }
-
-
-
 	threadpool thpool = thpool_init(6);
-
-
-
 	// thpool_add_work(thpool, (void *)handle_output, (void*)&serverSocket);
 	// thpool_add_work(thpool, (void *)handle_input, (void*)&serverSocket);
 	// thpool_add_work(thpool, (void *)handle_ping, (void *)&serverSocket);
