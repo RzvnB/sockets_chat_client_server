@@ -12,6 +12,7 @@
 #include "thpool.h"
 #include <time.h>
 
+
 #define _GNU_SOURCE             /* See feature_test_macros(7) */
 #include <sys/socket.h>
 
@@ -33,40 +34,134 @@ struct message_handle {
 struct connection_handle {
 	int socket;
 	int lastPingTime;
+	bool authenticated;
+	uint32_t usernameHash;
+	char userName[10];
 };
 
 
+
+char database[1000][10];
+char takenUsers[1000];
 
 static struct connection_handle clientConnections[MAX_CLIENTS];
 // static int clientSockets[MAX_CLIENTS];
 static int emptyIdx = 0;
 
+uint32_t adler32(const void *buf, size_t buflength);
+
+
 void broadcastMsg(char *msg, int r, int sourceSocket) {
 	for(int i = 0; i < emptyIdx; i++) {
 		if(clientConnections[i].socket != sourceSocket) {
+			if(clientConnections[i].authenticated) {
 			// printf("Sending -> %s <- to descriptor %d\n", msg, clientSockets[i]);
 				if(write(clientConnections[i].socket, msg, r) != r) {
 					printf("Error writing to socket\n");
 					exit(1);
 				}
+			}
 		}
 	}
+}
+
+
+bool startsWith(const char *pre, const char *str)
+{
+    size_t lenpre = strlen(pre),
+           lenstr = strlen(str);
+    return lenstr < lenpre ? false : strncmp(pre, str, lenpre) == 0;
+}
+
+int find_client_with_socket(int socket) {
+	for(int i = 0; i < emptyIdx; i++) {
+		if(clientConnections[i].socket == socket) {
+			return i;
+		}
+	}
+	return 0;
 }
 
 void handle_message(void *argt) {
 	struct message_handle *args = argt;
 
-	printf("Message is %s\n", args->msg);
-	if(strcmp(args->msg, "/ping") == 0) {
+	char *msg = args->msg;
+	printf("Message is %s\n", msg);
+	if(strcmp(msg, "/ping") == 0) {
 		// printf("Received ping \n");
 		for(int i = 0; i < emptyIdx; i++) {
 			if(clientConnections[i].socket == args->source) {
 				clientConnections[i].lastPingTime = (int)time(NULL);
 			}
 		}
+	} else if(strcmp(msg, "/quit") == 0) {
+		for(int i = 0; i < emptyIdx; i++) {
+			if(clientConnections[i].socket == args->source) {
+				write(clientConnections[i].socket, "/quit_back", MAX_MSG_SIZE);
+				printf("Closing connection on descriptor %d\n", clientConnections[i].socket);
+				close(clientConnections[i].socket);
+				if(clientConnections[i].authenticated) {
+					clientConnections[i].authenticated = false;
+					takenUsers[clientConnections[i].usernameHash] = 0;
+				}
+				memmove(&clientConnections[i], &clientConnections[i+1], emptyIdx-(i+1));
+				emptyIdx--;
+			}
+		}
+
+	} else if(startsWith("/auth", msg)) {
+		printf("I am hereererere\n");
+		msg = msg + strlen("/auth");
+		int clIdx = find_client_with_socket(args->source);
+		char *userName = strtok(msg, " ");
+		char *passWord = strtok(NULL, " ");
+		printf("Username: %s, Password: %s\n", userName, passWord);
+		uint32_t hash = adler32(userName, strlen(userName)) % 1000;
+		if(strcmp(database[hash], passWord) == 0) {
+			if(takenUsers[hash] != 1) {
+				clientConnections[clIdx].authenticated = true;
+				takenUsers[hash] = 1;
+				clientConnections[clIdx].usernameHash = hash;
+				write(clientConnections[clIdx].socket, "/auth_succ", MAX_MSG_SIZE);
+			} else {
+				write(clientConnections[clIdx].socket, "/auth_fail", MAX_MSG_SIZE);
+			}
+			// printf("Auth successful\n");
+		} else {
+			write(clientConnections[clIdx].socket, "/auth_fail", MAX_MSG_SIZE);
+			// printf("Auth unsuccessful\n");
+		}
+
 	} else {
-		broadcastMsg(args->msg, args->size, args->source);
+		for(int i = 0; i < emptyIdx; i++) {
+			if(clientConnections[i].socket == args->source) {
+				if(clientConnections[i].authenticated) {
+					broadcastMsg(msg, args->size, args->source);
+				} else {
+					write(clientConnections[i].socket, "/no_access", MAX_MSG_SIZE);
+				}
+			}
+		}
 	}
+}
+
+
+uint32_t adler32(const void *buf, size_t buflength) {
+     const uint8_t *buffer = (const uint8_t*)buf;
+
+     uint32_t s1 = 1;
+     uint32_t s2 = 0;
+
+     for (size_t n = 0; n < buflength; n++) {
+        s1 = (s1 + buffer[n]) % 65521;
+        s2 = (s2 + s1) % 65521;
+     }     
+     return (s2 << 16) | s1;
+}
+
+
+void handle_auth() {
+
 }
 
 void check_idle(void *argt) {
@@ -79,21 +174,52 @@ void check_idle(void *argt) {
 			if(timeNow - clientConnections[i].lastPingTime > 31) {
 				if(write(clientConnections[i].socket, timeOutMsg, len) != len) {
 					printf("Error writing timeout message!\n");
-					exit(1);
 				}
 				printf("Closing connection on descriptor %d\n", clientConnections[i].socket);
 				close(clientConnections[i].socket);
+				if(clientConnections[i].authenticated) {
+					clientConnections[i].authenticated = false;
+					takenUsers[clientConnections[i].usernameHash] = 0;
+				}
 				memmove(&clientConnections[i], &clientConnections[i+1], emptyIdx-(i+1));
 				emptyIdx--;
-				break;
 			}	
 		}
 		sleep(5);
 	}
 }
 
+// void print_database() {
+// 	for(int i = 0; i < 1000; i++) {
+// 		if(char[i]) {
+// 			printf("Password: %s\n", char[i]);
+// 		}
+// 	}
+// }
+
 
 int main() {
+
+	FILE *f = fopen("credentials.txt", "a+");
+
+	if(!f) {
+		printf("Error opening credentials file!\n");
+		exit(1);
+	}
+
+	
+	uint32_t hash;
+	char unameBuf[10];
+	char passBuf[10];
+
+	while(fscanf(f, "%s %s\n", unameBuf, passBuf) != EOF) {
+		// printf("%s sadface %s\n", unameBuf, passBuf);
+		hash = adler32(unameBuf, strlen(unameBuf)) % 1000;
+		// printf("hashcode - %d\n", hash % 1000);
+		strcpy(database[hash], passBuf);
+		printf("password in databse: %s\n", database[hash]);
+	};
+
 	struct epoll_event ev, events[MAX_EVENTS];
 
 	int listenSock, clientSock, nfds, epollfd;
@@ -104,10 +230,19 @@ int main() {
 
 	struct message_handle *args = malloc(sizeof(*args));
 
+	char *serverFullMsg = "/server_full";
+	int srvFullMsgLen = strlen(serverFullMsg);
+
 	if(!args) {
 		perror("Failed allocation for message handle");
 		exit(1);
 	}
+
+	// for(i = 0; i < MAX_CLIENTS; i++) {
+	// 	if(!clientConnections[i].socket) {
+	// 		printf("EMPTY");
+	// 	}
+	// }
 
 	struct sockaddr_in serverSockAddr, clientSockAddr;
 
@@ -147,7 +282,7 @@ int main() {
 		exit(1);
 	}
 
-	threadpool thpool = thpool_init(6);
+	threadpool thpool = thpool_init(20);
 
 	thpool_add_work(thpool, (void *)check_idle, NULL);
 	while(1) {
@@ -162,6 +297,16 @@ int main() {
 				if((clientSock = accept4(listenSock, (struct sockaddr *) &serverSockAddr, &clientLen, SOCK_NONBLOCK)) == -1) {
 					perror("accept()");
 					exit(1);
+				}
+
+				if(emptyIdx == MAX_CLIENTS) {
+					if(write(clientSock, serverFullMsg, srvFullMsgLen) != srvFullMsgLen) {
+						printf("Error writing server full message message!\n");
+						close(clientSock);
+						continue;
+					}
+					close(clientSock);
+					continue;
 				}
 				struct epoll_event Event;
 				Event.events = EPOLLIN | EPOLLET;
@@ -203,6 +348,10 @@ int main() {
 					for(i = 0; i < emptyIdx; i++) {
 						if(clientConnections[i].socket == events[n].data.fd) {
 							printf("Closing connection on descriptor %d\n", clientConnections[i].socket);
+							if(clientConnections[i].authenticated) {
+								clientConnections[i].authenticated = false;
+								takenUsers[clientConnections[i].usernameHash] = 0;
+							}
 							memmove(&clientConnections[i], &clientConnections[i+1], emptyIdx-(i+1));
 							emptyIdx--;
 							break;
